@@ -163,6 +163,9 @@ async fn inner_proxy_handler(
         let body_bytes = incoming_body.collect().await.unwrap().to_bytes();
         
         if let Ok(body_text) = std::str::from_utf8(&body_bytes) {
+            // Feature 1: Agent Inspector Logging
+            log_prompt(&host, body_text);
+
             let (redacted_text, secrets_found) = state.redact_secrets(body_text);
             
             if !secrets_found.is_empty() {
@@ -311,6 +314,51 @@ fn run_index_command(file_path: &str) {
     }
 }
 
+fn log_prompt(host: &str, payload: &str) {
+    use std::fs::OpenOptions;
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir_path = format!("{}/.ai-firewall", home);
+    let _ = fs::create_dir_all(&dir_path);
+    let log_path = format!("{}/prompts.jsonl", dir_path);
+    
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        // Use serde_json to safely format the log entry
+        let log_entry = serde_json::json!({
+            "timestamp": timestamp,
+            "host": host,
+            "payload": payload
+        });
+        
+        let _ = writeln!(file, "{}", log_entry.to_string());
+    }
+}
+
+fn run_inspect_command() {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir_path = format!("{}/.ai-firewall", home);
+    let log_path = format!("{}/prompts.jsonl", dir_path);
+    
+    // Ensure file exists so tail doesn't fail
+    let _ = fs::create_dir_all(&dir_path);
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(&log_path);
+
+    println!("🔎 Inspecting outbound AI prompts... (Press Ctrl+C to stop)");
+    
+    // Spawn tail -f to stream the log file to the terminal
+    let mut child = Command::new("tail")
+        .arg("-f")
+        .arg(&log_path)
+        .spawn()
+        .expect("Failed to start tail");
+        
+    let _ = child.wait();
+}
+
 fn run_wrapper_command(command_args: &[String]) {
     if command_args.is_empty() { return; }
     let target_command = &command_args[0];
@@ -345,6 +393,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     std::process::exit(1);
                 }
                 run_index_command(&args[2]);
+                return Ok(());
+            },
+            "inspect" => {
+                run_inspect_command();
                 return Ok(());
             },
             "run" => {
