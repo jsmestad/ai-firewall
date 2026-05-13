@@ -11,21 +11,33 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: macos-latest # Using macOS since we use notify-rust which has macOS specific features in our testing
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+        
       - name: Build
         run: cargo build --verbose
+        
       - name: Run tests
         run: cargo test --verbose
 
   lint:
     name: Lint
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
       - name: Check formatting
-        run: cargo fmt -- --check || true # Soft fail for now
+        run: cargo fmt -- --check || true
       - name: Run clippy
         run: cargo clippy
