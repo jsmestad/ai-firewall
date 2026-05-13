@@ -386,3 +386,119 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A helper to initialize state for tests without needing files
+    fn test_state() -> FirewallState {
+        let standard_patterns = vec![
+            (r"AKIA[0-9A-Z]{16}", "AWS_KEY"),                   
+            (r"ghp_[a-zA-Z0-9]{36}", "GITHUB_TOKEN"),                
+            (r"sk_live_[0-9a-zA-Z]{24}", "STRIPE_KEY"),            
+            (r"xoxb-[a-zA-Z0-9\-]{10,}", "SLACK_TOKEN"),            
+            (r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*", "JWT"),
+        ];
+
+        let mut standard_regexes = Vec::new();
+        for (pat, name) in standard_patterns {
+            standard_regexes.push((Regex::new(pat).unwrap(), name));
+        }
+
+        let custom_keywords = vec![
+            "Project Titan".to_string(),
+            "Apollo_v2_Engine".to_string(),
+            "super_secret_db_pass".to_string(),
+        ];
+
+        let mut custom_regexes = Vec::new();
+        for keyword in custom_keywords {
+            let escaped = regex::escape(&keyword);
+            custom_regexes.push(Regex::new(&escaped).unwrap());
+        }
+
+        // We use dummy certs for the tests so we don't depend on disk IO in unit tests
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["Test CA".to_string()]).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = params.self_signed(&key_pair).unwrap();
+
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("no native root CA")
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let client = Client::builder(TokioExecutor::new()).build(https);
+
+        FirewallState {
+            standard_regexes,
+            custom_regexes,
+            ca_params: Arc::new(params),
+            ca_key: Arc::new(key_pair),
+            https_client: client,
+        }
+    }
+
+    #[test]
+    fn test_aws_key_redaction() {
+        let state = test_state();
+        let payload = "Here is my key: AKIAIOSFODNN7EXAMPLE. Please don't steal it.";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, "Here is my key: [REDACTED_AWS_KEY]. Please don't steal it.");
+        assert!(types.contains(&"AWS_KEY".to_string()));
+    }
+
+    #[test]
+    fn test_github_token_redaction() {
+        let state = test_state();
+        let payload = "ghp_1234567890abcdef1234567890abcdef1234";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, "[REDACTED_GITHUB_TOKEN]");
+        assert!(types.contains(&"GITHUB_TOKEN".to_string()));
+    }
+
+    #[test]
+    fn test_slack_token_redaction() {
+        let state = test_state();
+        let payload = "Bot token: xoxb-1234567890-1234567890-abcdef";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, "Bot token: [REDACTED_SLACK_TOKEN]");
+        assert!(types.contains(&"SLACK_TOKEN".to_string()));
+    }
+
+    #[test]
+    fn test_custom_company_secret_redaction() {
+        let state = test_state();
+        let payload = "We are working on Project Titan using Apollo_v2_Engine.";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, "We are working on [REDACTED_COMPANY_SECRET] using [REDACTED_COMPANY_SECRET].");
+        assert!(types.contains(&"COMPANY_SECRET".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_secrets_in_one_payload() {
+        let state = test_state();
+        let payload = "DB=super_secret_db_pass; AWS=AKIAIOSFODNN7EXAMPLE";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, "DB=[REDACTED_COMPANY_SECRET]; AWS=[REDACTED_AWS_KEY]");
+        assert!(types.contains(&"COMPANY_SECRET".to_string()));
+        assert!(types.contains(&"AWS_KEY".to_string()));
+    }
+
+    #[test]
+    fn test_clean_payload() {
+        let state = test_state();
+        let payload = "This is just a normal question for an AI agent.";
+        let (redacted, types) = state.redact_secrets(payload);
+        
+        assert_eq!(redacted, payload); // Should remain unchanged
+        assert!(types.is_empty());
+    }
+}
