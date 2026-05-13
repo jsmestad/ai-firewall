@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+.env
+.dlp-proxy.toml
+*.pem
+.DS_Store
